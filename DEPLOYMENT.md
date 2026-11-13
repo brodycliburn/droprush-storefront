@@ -1,8 +1,8 @@
 # DROPRUSH deployment runbook
 
 This document prepares the checkout API for a real HTTPS deployment. **Nothing
-here deploys anything.** The current site build is static; checkout needs the
-Node API below running as a persistent service.
+in this repository deploys automatically.** The current site build is static;
+checkout needs the Node API below running as a persistent service.
 
 ## Recommended topology
 
@@ -11,7 +11,9 @@ Use one public HTTPS origin and reverse-proxy `/api/*` to the Node process:
 ```text
 Browser ──HTTPS──> https://your-domain.example
                        ├── /              static Vite build (dist/)
-                       └── /api/*         Node checkout API (port 8788)
+                       └── /api/*         Node checkout API
+                                             (port 8080 on App Platform;
+                                              port 8788 locally)
                                               ├── Turso (hosted libSQL/SQLite)
                                               └── Stripe Checkout + webhook
 ```
@@ -32,6 +34,10 @@ URL change and cross-site cookie handling; it is not the supported path yet.
 The API binds to `HOST` (production default `0.0.0.0`) and `PORT` (default
 `8788`). It speaks plain HTTP; TLS terminates at the hosting proxy/load
 balancer. Forward `X-Forwarded-Proto: https` so session cookies are `Secure`.
+
+The repository includes [`app.yaml`](app.yaml), a DigitalOcean App Platform
+template that runs the static site and API on one origin. It contains
+placeholders and does not deploy anything by itself; see [section 5](#5-deploy-on-digitalocean-app-platform).
 
 ## 1. Create the hosted database
 
@@ -100,7 +106,7 @@ turso db shell droprush-prod "select count(*) from users;"
 turso db shell droprush-prod "select count(*) from orders;"
 ```
 
-## 3. Stripe webhook URL
+## 3. Stripe webhook URL and setup checklist
 
 The **exact path** is:
 
@@ -158,6 +164,25 @@ stripe listen --forward-to http://127.0.0.1:8788/api/stripe/webhook
 # use the printed whsec_... as STRIPE_WEBHOOK_SECRET
 ```
 
+### Stripe webhook setup checklist
+
+Use **live mode** for the production endpoint. Test-mode endpoints and signing
+secrets are separate; do not reuse them.
+
+- [ ] Endpoint is exactly `https://shop.example.com/api/stripe/webhook`, with no trailing slash.
+- [ ] The endpoint subscribes to:
+  - `checkout.session.completed`
+  - `checkout.session.async_payment_succeeded`
+  - `checkout.session.async_payment_failed`
+  - `checkout.session.expired`
+- [ ] The signing secret is stored as `STRIPE_WEBHOOK_SECRET` on the API service only.
+- [ ] `NODE_ENV=production node --env-file=.env.production scripts/check-deploy.mjs` prints the same absolute webhook URL.
+- [ ] The API is redeployed after setting or rotating the secret.
+- [ ] A Stripe Dashboard test delivery returns 2xx.
+- [ ] A low-value live checkout marks the order paid and `supplier_status='ready'`.
+- [ ] Replaying the same signed event does not duplicate the payment event.
+- [ ] A signed event with the wrong amount or currency is rejected.
+
 ## 4. Environment variables
 
 Set these in the hosting provider's secret/environment store. Never commit
@@ -167,7 +192,7 @@ them or expose the Stripe secret to the browser.
 | --- | --- | --- |
 | `NODE_ENV` | Yes, `production` | Enables fail-fast checks and disables demo checkout. |
 | `HOST` | Yes, usually `0.0.0.0` | Interface the Node process binds. |
-| `PORT` | Usually provided by host | HTTP port, default `8788`. |
+| `PORT` | Usually provided by host | HTTP port. App Platform uses `8080`; local default is `8788`. |
 | `PUBLIC_SITE_URL` | Yes | Customer-facing HTTPS origin; Stripe success/cancel URLs. |
 | `PUBLIC_API_URL` | Recommended | Public HTTPS origin of the API; defaults to `PUBLIC_SITE_URL`. Builds the exact webhook URL. |
 | `ALLOWED_ORIGINS` | Optional | Comma-separated browser origins allowed to call the API with cookies. Defaults to `PUBLIC_SITE_URL` (and localhost in development). |
@@ -186,9 +211,109 @@ Production validation fails the process if `PUBLIC_SITE_URL`,
 if the database URL is a local `file:`. `ADMIN_TOKEN` must be at least 24
 characters. It also warns if the Stripe key is still a test key.
 
-## 5. Start the API
+## 5. Deploy on DigitalOcean App Platform
 
-After installing dependencies on the host:
+The root [`app.yaml`](app.yaml) is an App Platform spec for this repository. It
+is a template: replace every `CHANGE_ME` and example value before using it. It
+does not deploy anything by itself.
+
+One app runs both components on one origin:
+
+| Component | Type | Build | Run / output |
+| --- | --- | --- | --- |
+| `api` | Web service | `bun install --frozen-lockfile` | `node server/index.mjs`, HTTP port `8080` |
+| `web` | Static site | `bun run build` | `dist/` |
+
+Use the plan `apps-s-1vcpu-0.5gb` ($5/month) and **one** `api` instance. The
+login/signup throttle is in memory, so do not scale the API horizontally
+without moving it to shared storage. Do not add a DigitalOcean managed
+database; Turso is the database.
+
+### 5.1 Replace the app.yaml placeholders
+
+Before creating the app, replace:
+
+- `name` and `region` (choose the region closest to Turso)
+- both `github.repo` values with `<owner>/<repo>`
+- `domains[0].domain` and every `shop.example.com` value
+- `PUBLIC_SITE_URL`, `PUBLIC_API_URL`, and `ALLOWED_ORIGINS`
+- `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
+- `ADMIN_TOKEN` with the output of `openssl rand -hex 32`
+
+The four credentials are marked `type: SECRET` in the spec. Do not commit real
+values. `ADMIN_TOKEN=CHANGE_ME` is intentionally shorter than the 24-character
+minimum, so the API will not boot until it is replaced. The Stripe secret is
+also a placeholder, not a working key.
+
+### 5.2 Create and configure the app
+
+1. Push the repository to GitHub/GitLab. App Platform deploys from Git, not
+   from the local working directory.
+2. In the DigitalOcean Control Panel, open **Apps → Create App**, select the
+   repository and branch, and accept the detected Bun buildpack. App Platform
+   installs Node 22 because the package scripts use Node.
+3. Create the `api` web service and `web` static site with the values above.
+   The spec defines both; if you use the CLI, run this only after replacing
+   every placeholder:
+   ```sh
+   doctl apps create --spec app.yaml
+   ```
+   This command creates and deploys the app. Do not run it as part of this
+   change.
+4. Confirm the ingress rules:
+
+   | Path | Path handling | Component |
+   | --- | --- | --- |
+   | `/api` | **Preserve Full Path** | `api` |
+   | `/` | Default | `web` |
+
+   In the Control Panel this is under **Networking → Component routing**. In
+   the spec it is `preserve_path_prefix: true` on the `api` component. Keep the
+   `/api` rule before the `/` fallback.
+
+5. Set the API health check to `/api/health`. The API listens on port `8080`.
+6. Do not add a database component, and do not set `ORDER_DB` on the API.
+7. Add the custom domain and TLS using the checklist below.
+
+**Important:** without full path preservation, App Platform forwards
+`/api/health` as `/health`; the API returns 404 and the health check fails.
+
+### 5.3 DNS and TLS checklist
+
+- [ ] Add `shop.example.com` under **Networking → Domains → Add domain**.
+- [ ] Choose **You manage your domain** and copy the `<app>.ondigitalocean.app` CNAME target, or **We manage your domain** and set DigitalOcean's nameservers at the registrar.
+- [ ] Create the DNS record: `CNAME shop <app>.ondigitalocean.app` with a 300-second TTL. For an apex domain, use CNAME flattening or App Platform's A records.
+- [ ] If the domain has CAA records, allow both `letsencrypt.org` and `pki.goog`.
+- [ ] Wait for the domain to become active. App Platform provisions and renews TLS automatically and redirects HTTP to HTTPS.
+- [ ] Set `PUBLIC_SITE_URL`, `PUBLIC_API_URL`, and `ALLOWED_ORIGINS` to `https://shop.example.com`; redeploy the API after changing them.
+- [ ] `curl -I https://shop.example.com` returns HTTPS with a valid certificate.
+- [ ] Sign in and confirm the session cookie is `Secure`.
+
+App Platform does not add HSTS headers. Add HSTS in the app if required. Keep
+`TRUST_PROXY=true` so rate limiting uses the forwarded client IP. A subdomain
+is simpler than an apex domain; DNS changes can take up to 72 hours.
+
+### 5.4 App Platform setup checklist
+
+- [ ] `app.yaml` placeholders are replaced; no `CHANGE_ME` remains.
+- [ ] `github.repo`, branch, app name, and region are correct.
+- [ ] `api` uses `node server/index.mjs` on port `8080`.
+- [ ] `/api` uses **Preserve Full Path**.
+- [ ] Health check is `/api/health`.
+- [ ] `web` builds `dist/` with `bun run build`.
+- [ ] Environment variables are on `api` only; secrets are marked `SECRET`.
+- [ ] One API instance is configured.
+- [ ] No DigitalOcean managed database was added.
+- [ ] DNS/TLS checklist is complete.
+
+## 6. Start the API
+
+On App Platform, the `api` component runs the commands from `app.yaml`; skip
+the manual install, start, and reverse-proxy steps. The platform terminates
+TLS and forwards HTTPS requests to port `8080`.
+
+For a manual host, after installing dependencies:
 
 ```sh
 bun install --production
@@ -222,7 +347,8 @@ A failing database check returns HTTP 503. Point the host's health check at
 
 ### Reverse proxy
 
-The API itself does not terminate TLS. A minimal Caddy example:
+App Platform does not use this section; it handles TLS and routing. For a
+manual host, the API itself does not terminate TLS. A minimal Caddy example:
 
 ```caddyfile
 example.com {
@@ -240,7 +366,7 @@ If you use Nginx, proxy `/api/` to `127.0.0.1:8788`, set
 `X-Forwarded-Proto $scheme` and `X-Forwarded-For $proxy_add_x_forwarded_for`,
 and set `TRUST_PROXY=true`. Do not expose port 8788 directly to the internet.
 
-## 6. Stripe checkout flow
+## 7. Stripe checkout flow
 
 With `STRIPE_SECRET_KEY` present:
 
@@ -257,7 +383,7 @@ Without a key, local development still creates a clearly labelled test order.
 With `NODE_ENV=production`, a missing key stops the API instead of allowing free
 orders.
 
-## 7. Supplier handoff
+## 8. Supplier handoff
 
 Paid orders are available to the supplier handoff tools once
 `supplier_status='ready'`. Export a CSV for the supplier:
@@ -298,7 +424,19 @@ All require `Authorization: Bearer $ADMIN_TOKEN`. Without `ADMIN_TOKEN` the
 endpoints return 503; a wrong token returns 401. Do not put the token in
 browser code or the static build.
 
-## 8. Pre-deploy checks
+### ADMIN_TOKEN checklist
+
+- [ ] Generate a 64-character token with `openssl rand -hex 32`; store it in a password manager.
+- [ ] Replace `ADMIN_TOKEN=CHANGE_ME` in `app.yaml` (or the App Platform environment) with that value.
+- [ ] Keep `ADMIN_TOKEN` on the `api` component only; never in the static site, browser code, `VITE_*`, or Git.
+- [ ] Set `PUBLIC_API_URL=https://shop.example.com` when running the CLI; it otherwise defaults to localhost.
+- [ ] `ADMIN_TOKEN=... PUBLIC_API_URL=... bun run supplier:export` writes a mode-600 CSV.
+- [ ] A request without a bearer token returns 401; with the token it returns only paid `ready` orders.
+- [ ] `supplier:mark-sent` is idempotent and removes the order from the default export.
+- [ ] Treat the CSV as PII; it contains names, addresses, and contact details.
+- [ ] Rotate the token immediately if it is exposed, and update the App Platform secret and CLI.
+
+## 9. Pre-deploy checks
 
 These do not deploy anything:
 
@@ -308,20 +446,24 @@ bun run check:deploy          # with production env loaded
 node --env-file=.env.production scripts/export-db.mjs --apply
 ```
 
-Then verify against a staging database/API:
+Then verify against a staging or App Platform deployment:
 
-- `GET /api/health` returns 200 and `database: "turso"`.
-- Signup/login sets a `Secure` httpOnly cookie over HTTPS.
-- Wants and orders survive an API restart.
-- A Stripe test-mode payment marks the order paid, and replaying the webhook does not duplicate the payment event.
-- A wrong amount in a signed webhook is rejected.
-- The Stripe Dashboard webhook shows successful 2xx deliveries.
-- The confirmation page loads the paid order.
-- Authorized supplier JSON/CSV exports include the paid order's shipping address; a request without the bearer token returns 401.
-- Marking an order sent removes it from the default supplier export and records `supplier_sent_at`.
+- [ ] `GET /api/health` returns 200 and `database: "turso"`.
+- [ ] App Platform `/api` uses **Preserve Full Path**, and the health check is `/api/health`.
+- [ ] `app.yaml` has no `CHANGE_ME`; domain, repo, and environment are correct.
+- [ ] The custom domain is active and the HTTPS certificate is valid.
+- [ ] Signup/login sets a `Secure` httpOnly cookie over HTTPS.
+- [ ] Wants and orders survive an API restart.
+- [ ] A Stripe test-mode payment marks the order paid, and replaying the webhook does not duplicate the payment event.
+- [ ] A wrong amount in a signed webhook is rejected.
+- [ ] The Stripe Dashboard webhook shows successful 2xx deliveries.
+- [ ] The confirmation page loads the paid order.
+- [ ] Authorized supplier JSON/CSV exports include the paid order's shipping address; a request without the bearer token returns 401.
+- [ ] Marking an order sent removes it from the default supplier export and records `supplier_sent_at`.
 
 ## Operational notes
 
+- **App Platform:** one `api` instance and one `web` static site in a single app; do not add a DigitalOcean managed database or set `ORDER_DB` in production.
 - **Backups:** enable Turso backups/point-in-time recovery before taking real orders.
 - **Rate limiting:** the login/signup throttle is in-memory. Run a single API instance, or move throttling to a shared store before scaling horizontally.
 - **Taxes/refunds/chargebacks:** Stripe handles processing and payouts; tax collection and refund policy remain your responsibility.

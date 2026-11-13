@@ -1,0 +1,129 @@
+# DigitalOcean App Platform specification for Droprush.
+#
+# This is a template, not a deployment. Replace every CHANGE_ME and example
+# value before creating the app. Do not put real secrets in this file.
+#
+# The API and static site share one origin:
+#   https://shop.example.com/       -> web static site
+#   https://shop.example.com/api/*  -> api Node service
+#
+# The /api route MUST preserve the prefix. Otherwise /api/health reaches the
+# app as /health and the health check fails.
+
+name: droprush # must be unique within your DigitalOcean account
+region: nyc # choose the region closest to your Turso database
+
+features:
+  - buildpack-stack=ubuntu-22
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+domains:
+  - domain: shop.example.com # replace with your domain; add the CNAME in DNS
+    type: PRIMARY
+    minimum_tls_version: "1.2"
+    # If DigitalOcean manages this domain's DNS, also set:
+    # zone: example.com
+
+services:
+  - name: api
+    github:
+      repo: your-github-user/droprush-storefront # replace with owner/repo
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    # The Bun buildpack installs dependencies automatically. This explicit
+    # command prevents the API component from running the Vite build.
+    build_command: bun install --frozen-lockfile
+    run_command: node server/index.mjs
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb # $5/month, 1 vCPU / 512 MiB
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 20
+      period_seconds: 10
+      timeout_seconds: 5
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+        type: GENERAL
+      - key: HOST
+        value: 0.0.0.0
+        scope: RUN_TIME
+        type: GENERAL
+      - key: PORT
+        value: "8080"
+        scope: RUN_TIME
+        type: GENERAL
+      - key: PUBLIC_SITE_URL
+        value: https://shop.example.com
+        scope: RUN_TIME
+        type: GENERAL
+      - key: PUBLIC_API_URL
+        value: https://shop.example.com
+        scope: RUN_TIME
+        type: GENERAL
+      - key: ALLOWED_ORIGINS
+        value: https://shop.example.com
+        scope: RUN_TIME
+        type: GENERAL
+      - key: TURSO_DATABASE_URL
+        value: libsql://CHANGE_ME
+        scope: RUN_TIME
+        type: GENERAL
+      - key: TURSO_AUTH_TOKEN
+        value: CHANGE_ME
+        scope: RUN_TIME
+        type: SECRET
+      - key: STRIPE_SECRET_KEY
+        value: CHANGE_ME
+        scope: RUN_TIME
+        type: SECRET
+      - key: STRIPE_WEBHOOK_SECRET
+        value: CHANGE_ME
+        scope: RUN_TIME
+        type: SECRET
+      # Intentionally too short for production validation. Replace it with
+      # the output of `openssl rand -hex 32` so the API cannot boot with this
+      # placeholder.
+      - key: ADMIN_TOKEN
+        value: CHANGE_ME
+        scope: RUN_TIME
+        type: SECRET
+      - key: TRUST_PROXY
+        value: "true"
+        scope: RUN_TIME
+        type: GENERAL
+      # Do not set ORDER_DB in production. Turso is the production database.
+
+static_sites:
+  - name: web
+    github:
+      repo: your-github-user/droprush-storefront # replace with owner/repo
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    build_command: bun run build
+    output_dir: dist
+    index_document: index.html
+
+ingress:
+  rules:
+    # Keep /api/... intact so the API sees /api/health and /api/stripe/webhook.
+    - component:
+        name: api
+        preserve_path_prefix: true
+      match:
+        path:
+          prefix: /api
+    # All other requests go to the static Vite build.
+    - component:
+        name: web
+      match:
+        path:
+          prefix: /
