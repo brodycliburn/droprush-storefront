@@ -93,6 +93,19 @@ if (production) {
   } else if (adminToken.length < 24) {
     errors.push('ADMIN_TOKEN must be at least 24 characters.')
   }
+
+  // Fail closed if any production setting still contains a template value.
+  // Only variable names are reported; secret values never enter the message.
+  const placeholderVariables = Object.entries(process.env)
+    .filter(([, raw]) => /CHANGE_ME/i.test(String(raw ?? '')))
+    .map(([key]) => key)
+    .sort()
+  if (placeholderVariables.length) {
+    errors.push(
+      `Production environment variables still contain the template placeholder CHANGE_ME: ${placeholderVariables.join(', ')}. Replace them before starting the API.`
+    )
+  }
+
   if (stripeSecretKey && !stripeSecretKey.startsWith('sk_live_')) {
     warnings.push('STRIPE_SECRET_KEY is not a live key (sk_live_...); real cards will not be charged.')
   }

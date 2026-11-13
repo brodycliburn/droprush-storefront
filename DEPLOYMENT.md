@@ -209,7 +209,12 @@ Production validation fails the process if `PUBLIC_SITE_URL`,
 `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `STRIPE_SECRET_KEY`,
 `STRIPE_WEBHOOK_SECRET` or `ADMIN_TOKEN` is missing, if URLs are not HTTPS, or
 if the database URL is a local `file:`. `ADMIN_TOKEN` must be at least 24
-characters. It also warns if the Stripe key is still a test key.
+characters. It also fails if any production environment value still contains
+the template placeholder `CHANGE_ME`, including `TURSO_*`, `STRIPE_*`,
+`PUBLIC_*`, and `ADMIN_TOKEN`. The error lists the variable names, never their
+values. This prevents a healthy API process from serving checkout or webhook
+requests with placeholder credentials. It also warns if the Stripe key is
+still a test key.
 
 ## 5. Deploy on DigitalOcean App Platform
 
@@ -242,9 +247,11 @@ Before creating the app, replace:
 - `ADMIN_TOKEN` with the output of `openssl rand -hex 32`
 
 The four credentials are marked `type: SECRET` in the spec. Do not commit real
-values. `ADMIN_TOKEN=CHANGE_ME` is intentionally shorter than the 24-character
-minimum, so the API will not boot until it is replaced. The Stripe secret is
-also a placeholder, not a working key.
+values. The API rejects any production environment value containing
+`CHANGE_ME`, so a missed Turso or Stripe placeholder stops startup instead of
+leaving a healthy service with broken checkout or webhooks. `ADMIN_TOKEN`
+remains intentionally short as an additional fail-closed guard until it is
+replaced. The Stripe secret is also a placeholder, not a working key.
 
 ### 5.2 Create and configure the app
 
@@ -451,6 +458,7 @@ node --env-file=.env.production scripts/export-db.mjs --apply
 
 Then verify against a staging or App Platform deployment:
 
+- [ ] No production environment value contains `CHANGE_ME`; `bun run check:deploy` fails if one does.
 - [ ] `GET /api/health` returns 200 and `database: "turso"`.
 - [ ] App Platform `/api` uses **Preserve Full Path**, and the health check is `/api/health`.
 - [ ] `app.yaml` has no `CHANGE_ME`; domain, repo, and environment are correct.
