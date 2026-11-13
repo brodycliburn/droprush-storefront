@@ -108,9 +108,19 @@ static_sites:
       branch: main
       deploy_on_push: true
     source_dir: /
-    build_command: bun run build
+    # Bun auto-detection is documented for the Bun buildpack generally, but
+    # not specifically for static sites. Use the documented Node buildpack so
+    # the Vite build does not depend on Bun being detected for this component.
+    environment_slug: node-js
+    build_command: npm run build
     output_dir: dist
     index_document: index.html
+    envs:
+      # No package-lock.json is committed; use npm install, not npm ci.
+      - key: USE_NPM_INSTALL
+        value: "true"
+        scope: BUILD_TIME
+        type: GENERAL
 
 ingress:
   rules:

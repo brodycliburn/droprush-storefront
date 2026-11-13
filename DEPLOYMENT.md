@@ -222,7 +222,7 @@ One app runs both components on one origin:
 | Component | Type | Build | Run / output |
 | --- | --- | --- | --- |
 | `api` | Web service | `bun install --frozen-lockfile` | `node server/index.mjs`, HTTP port `8080` |
-| `web` | Static site | `bun run build` | `dist/` |
+| `web` | Static site | `npm run build` (Node/npm) | `dist/` |
 
 Use the plan `apps-s-1vcpu-0.5gb` ($5/month) and **one** `api` instance. The
 login/signup throttle is in memory, so do not scale the API horizontally
@@ -251,8 +251,11 @@ also a placeholder, not a working key.
 1. Push the repository to GitHub/GitLab. App Platform deploys from Git, not
    from the local working directory.
 2. In the DigitalOcean Control Panel, open **Apps → Create App**, select the
-   repository and branch, and accept the detected Bun buildpack. App Platform
-   installs Node 22 because the package scripts use Node.
+   repository and branch. The API uses the detected Bun buildpack. The static
+   site explicitly uses the documented Node/npm buildpack because Bun
+   auto-detection is not documented for static sites. `USE_NPM_INSTALL=true`
+   makes the Node buildpack use `npm install` because this repo has no
+   `package-lock.json`.
 3. Create the `api` web service and `web` static site with the values above.
    The spec defines both; if you use the CLI, run this only after replacing
    every placeholder:
@@ -301,7 +304,7 @@ is simpler than an apex domain; DNS changes can take up to 72 hours.
 - [ ] `api` uses `node server/index.mjs` on port `8080`.
 - [ ] `/api` uses **Preserve Full Path**.
 - [ ] Health check is `/api/health`.
-- [ ] `web` builds `dist/` with `bun run build`.
+- [ ] `web` builds `dist/` with `npm run build` using the Node buildpack and `USE_NPM_INSTALL=true`.
 - [ ] Environment variables are on `api` only; secrets are marked `SECRET`.
 - [ ] One API instance is configured.
 - [ ] No DigitalOcean managed database was added.
