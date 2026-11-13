@@ -1,0 +1,27 @@
+{
+  "name": "droprush-storefront",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.5"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "dev:api": "node --env-file-if-exists=.env server/index.mjs",
+    "start": "node server/index.mjs",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "db:export": "node --env-file-if-exists=.env scripts/export-db.mjs",
+    "db:push": "node --env-file-if-exists=.env scripts/export-db.mjs --apply",
+    "supplier:export": "node --env-file-if-exists=.env scripts/supplier-handoff.mjs",
+    "supplier:mark-sent": "node --env-file-if-exists=.env scripts/supplier-handoff.mjs --sent",
+    "check:deploy": "node --env-file-if-exists=.env scripts/check-deploy.mjs"
+  },
+  "devDependencies": {
+    "vite": "^8.3.0"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.18.0"
+  }
+}

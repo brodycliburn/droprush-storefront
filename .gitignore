@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.data/
+.env
+.env.*
+!.env.example
+
+# Local verification screenshots and test images
+artifacts/
+/freebuff-sites-build/
